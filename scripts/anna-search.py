@@ -9,7 +9,7 @@ same binary passes it, so the browser step lives here and the HTML is parsed
 by the Go side (internal/anna/playwright.go) with selectors re-verified
 against a live capture.
 
-Usage: anna-search.py <query> [base_url]
+Usage: anna-search.py <query> [base_url_or_host]
 
 stdout: the rendered search page HTML.
 stderr + exit 1: the challenge never resolved or the page never rendered.
@@ -76,6 +76,8 @@ def main() -> int:
         return 2
     query = sys.argv[1]
     base = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_BASE
+    if "://" not in base:
+        base = f"https://{base.strip('/')}"
     url = f"{base.rstrip('/')}/search?q={urllib.parse.quote_plus(query)}"
     try:
         body = asyncio.run(render(url))

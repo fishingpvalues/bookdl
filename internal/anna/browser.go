@@ -106,9 +106,7 @@ type BrowserClient struct {
 
 // NewBrowserClient creates a new browser client
 func NewBrowserClient(baseURL string) *BrowserClient {
-	if baseURL == "" {
-		baseURL = "annas-archive.gl"
-	}
+	baseURL = NormalizeHost(baseURL)
 	return &BrowserClient{baseURL: baseURL}
 }
 

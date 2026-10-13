@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/billmal071/bookdl/internal/anna"
@@ -153,9 +154,15 @@ func single(_ context.Context, name string, fn func() ([]*anna.Book, error)) *Ou
 }
 
 // statusFor turns a per-source result into a SourceStatus.
+//
+// "no results" is a normal outcome, not a degraded source: a healthy source that
+// matched nothing must not be reported as unavailable.
 func statusFor(name string, books []*anna.Book, err error) SourceStatus {
 	st := SourceStatus{Source: name, Results: len(books)}
 	switch {
+	case err != nil && isNoResults(err):
+		st.State = StatusEmpty
+		st.Err = ""
 	case err != nil:
 		st.State = StatusDegraded
 		st.Err = err.Error()
@@ -165,6 +172,19 @@ func statusFor(name string, books []*anna.Book, err error) SourceStatus {
 		st.State = StatusOK
 	}
 	return st
+}
+
+// isNoResults recognises the per-source "matched nothing" sentinel. The sources
+// wrap it inconsistently, so both errors.Is and a message check are used.
+func isNoResults(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, anna.ErrNoResults) || errors.Is(err, zlibrary.ErrNoResults) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no results found") || strings.Contains(msg, "no results")
 }
 
 // searchZLibrary searches only Z-Library

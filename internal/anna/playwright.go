@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html"
 	"net/url"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -77,9 +78,39 @@ func NewPlaywrightClient(baseURL, script, python string) *PlaywrightClient {
 	}
 }
 
-// Available reports whether the Playwright helper is configured and present.
+// defaultHelperPaths are searched when no helper is configured, so the anna
+// path works in the bookdl image (and against a bookdl-web style layout)
+// without extra configuration.
+var defaultHelperPaths = []string{
+	"/usr/local/bin/anna-search.py",
+	"/app/stealth-search.py",
+	"/usr/local/bin/stealth-search.py",
+}
+
+// helperPath resolves the Playwright helper script actually to use.
+func (c *PlaywrightClient) helperPath() string {
+	if c == nil {
+		return ""
+	}
+	if c.script != "" {
+		if _, err := os.Stat(c.script); err == nil {
+			return c.script
+		}
+	}
+	for _, candidate := range defaultHelperPaths {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	return ""
+}
+
+// Available reports whether a Playwright helper and interpreter are present.
 func (c *PlaywrightClient) Available() bool {
-	if c == nil || c.script == "" {
+	if c == nil {
+		return false
+	}
+	if c.helperPath() == "" {
 		return false
 	}
 	_, err := exec.LookPath(c.python)
@@ -105,7 +136,7 @@ func (c *PlaywrightClient) SearchPage(ctx context.Context, query string, limit i
 	runCtx, cancel := context.WithTimeout(ctx, playwrightTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(runCtx, c.python, c.script, query, c.baseURL)
+	cmd := exec.CommandContext(runCtx, c.python, c.helperPath(), query, "https://"+NormalizeHost(c.baseURL))
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -253,7 +284,7 @@ func parseSizeBytes(s string) int64 {
 
 // searchURL builds the search URL for a page.
 func searchURL(baseURL, query string, page int) string {
-	u := fmt.Sprintf("https://%s/search?q=%s", baseURL, url.QueryEscape(query))
+	u := fmt.Sprintf("https://%s/search?q=%s", NormalizeHost(baseURL), url.QueryEscape(query))
 	if page > 1 {
 		u = fmt.Sprintf("%s&page=%d", u, page)
 	}

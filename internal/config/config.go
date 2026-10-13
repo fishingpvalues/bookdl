@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/spf13/viper"
+	"gopkg.in/yaml.v3"
 )
 
 // Config holds all application configuration
@@ -133,6 +134,11 @@ func Init(cfgFile string) error {
 	viper.SetDefault("browser.max_countdown_wait", 90*time.Second)
 	viper.SetDefault("browser.poll_interval", 3*time.Second)
 	viper.SetDefault("browser.verbose_logging", false)
+	// The anna search path runs scripts/anna-search.py through Playwright. Both
+	// keys need defaults, otherwise `config set` drops them again (viper only
+	// persists keys it knows about).
+	viper.SetDefault("browser.playwright_script", "")
+	viper.SetDefault("browser.python_path", "python3")
 	viper.SetDefault("cache.enabled", true)
 	viper.SetDefault("cache.ttl", 24*time.Hour)
 
@@ -165,7 +171,13 @@ func Get() *Config {
 	return cfg
 }
 
-// Set sets a configuration value
+// Set sets a configuration value and persists it without destroying the rest of
+// the file.
+//
+// viper.WriteConfigAs() rewrites the file from viper's in-memory map, which
+// silently drops every key it has no value or default for. Writing through a
+// parsed copy of the existing file instead means a `config set` for one key can
+// never erase another.
 func Set(key, value string) error {
 	viper.Set(key, value)
 
@@ -175,10 +187,54 @@ func Set(key, value string) error {
 		return err
 	}
 
+	path := GetConfigPath()
+	settings := map[string]interface{}{}
+	if data, err := os.ReadFile(path); err == nil && len(data) > 0 {
+		if err := yaml.Unmarshal(data, &settings); err != nil {
+			// A corrupt file is replaced rather than silently kept broken.
+			settings = map[string]interface{}{}
+		}
+	}
+	setNested(settings, key, coerceValue(value))
+
+	out, err := yaml.Marshal(settings)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, out, 0644); err != nil {
+		return err
+	}
+
 	// Reset cached config
 	cfg = nil
 
-	return viper.WriteConfigAs(GetConfigPath())
+	return nil
+}
+
+// coerceValue keeps config values as strings except for the obvious scalars, so
+// `config set cache.enabled false` does not store the string "false".
+func coerceValue(value string) interface{} {
+	switch value {
+	case "true":
+		return true
+	case "false":
+		return false
+	}
+	return value
+}
+
+// setNested writes value at a dotted path, creating intermediate maps.
+func setNested(m map[string]interface{}, key string, value interface{}) {
+	parts := strings.Split(key, ".")
+	for _, part := range parts[:len(parts)-1] {
+		next, ok := m[part].(map[string]interface{})
+		if !ok {
+			next = map[string]interface{}{}
+			m[part] = next
+		}
+		m = next
+	}
+	m[parts[len(parts)-1]] = value
 }
 
 // GetValue retrieves a configuration value

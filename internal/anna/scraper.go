@@ -36,9 +36,7 @@ type ScraperClient struct {
 
 // NewScraperClient creates a new scraper client
 func NewScraperClient(baseURL string) *ScraperClient {
-	if baseURL == "" {
-		baseURL = "annas-archive.gl"
-	}
+	baseURL = NormalizeHost(baseURL)
 	cfg := config.Get()
 	return &ScraperClient{
 		baseURL:    baseURL,

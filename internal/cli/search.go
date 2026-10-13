@@ -40,6 +40,11 @@ Examples:
 	RunE: runSearch,
 }
 
+// searchTimeout bounds one search. The anna source renders the page in a real
+// browser and has to sit through the DDoS-Guard challenge first, so a short
+// budget aborts a search that would have succeeded.
+const searchTimeout = 150 * time.Second
+
 // filterOptions holds all search filter settings
 type filterOptions struct {
 	format   string
@@ -117,7 +122,9 @@ func runSearch(cmd *cobra.Command, args []string) error {
 	// Create searcher and search
 	searcher := search.NewSearcher(searchOpt)
 
-	ctx, cancel := context.WithTimeout(cmd.Context(), 60*time.Second)
+	// The anna path waits out a DDoS-Guard challenge in a real browser
+	// (~15-40s), so the budget has to cover browser startup plus the wait loop.
+	ctx, cancel := context.WithTimeout(cmd.Context(), searchTimeout)
 	defer cancel()
 
 	// Get extra results for filtering (more if filters are active)
@@ -210,7 +217,7 @@ func runSearch(cmd *cobra.Command, args []string) error {
 	currentPage := 1
 	loadMore := func() ([]*anna.Book, error) {
 		currentPage++
-		newCtx, newCancel := context.WithTimeout(cmd.Context(), 60*time.Second)
+		newCtx, newCancel := context.WithTimeout(cmd.Context(), searchTimeout)
 		defer newCancel()
 
 		moreBooks, err := searcher.SearchPage(newCtx, query, searchLimit, currentPage)
@@ -662,7 +669,9 @@ func showSearchHistoryInteractive(cmd *cobra.Command, args []string) error {
 	// Create client and search
 	searcher := search.NewSearcher(search.OptionAll)
 
-	ctx, cancel := context.WithTimeout(cmd.Context(), 60*time.Second)
+	// The anna path waits out a DDoS-Guard challenge in a real browser
+	// (~15-40s), so the budget has to cover browser startup plus the wait loop.
+	ctx, cancel := context.WithTimeout(cmd.Context(), searchTimeout)
 	defer cancel()
 
 	// Get extra results for filtering
@@ -733,7 +742,7 @@ func showSearchHistoryInteractive(cmd *cobra.Command, args []string) error {
 	currentPage := 1
 	loadMore := func() ([]*anna.Book, error) {
 		currentPage++
-		newCtx, newCancel := context.WithTimeout(cmd.Context(), 60*time.Second)
+		newCtx, newCancel := context.WithTimeout(cmd.Context(), searchTimeout)
 		defer newCancel()
 
 		moreBooks, err := searcher.SearchPage(newCtx, selected.Query, searchLimit, currentPage)

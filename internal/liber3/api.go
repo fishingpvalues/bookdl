@@ -129,7 +129,9 @@ func (c *APIClient) SearchPage(ctx context.Context, query string, limit int, pag
 
 	var searchResp apiSearchResponse
 	if err := json.Unmarshal(respBody, &searchResp); err != nil {
-		return nil, fmt.Errorf("failed to parse search response: %w", err)
+		// A non-JSON body means the host answered with something that is not the
+		// Liber3 API at all (parked page, proxy error), i.e. it is gone.
+		return nil, fmt.Errorf("%w: %s did not return JSON", ErrUnavailable, apiBaseURL())
 	}
 
 	if searchResp.Code != 200 {
