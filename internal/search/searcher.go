@@ -273,7 +273,9 @@ func (s *Searcher) searchAnna(ctx context.Context, query string, limit int) ([]*
 // produced, so every source gets its own bound and the search returns as soon
 // as one of them has something to show.
 const (
-	AnnaSourceBudget     = 120 * time.Second
+	// Two render attempts (the DDoS-Guard challenge is intermittent) plus browser
+	// start-up have to fit inside this budget.
+	AnnaSourceBudget     = 150 * time.Second
 	ZLibrarySourceBudget = 15 * time.Second
 	Liber3SourceBudget   = 15 * time.Second
 	DefaultSourceBudget  = 20 * time.Second

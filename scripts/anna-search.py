@@ -28,7 +28,7 @@ USER_AGENT = (
 RESULT_MARKER = 'flex  pt-3 pb-3 border-b'
 
 
-async def render(url: str, timeout_s: int = 60, wait_s: int = 45) -> str:
+async def render(url: str, timeout_s: int = 45, wait_s: int = 40) -> str:
     from playwright.async_api import async_playwright
     from playwright_stealth import Stealth
 

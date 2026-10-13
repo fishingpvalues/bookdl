@@ -43,7 +43,7 @@ Examples:
 // searchTimeout bounds one search. The anna source renders the page in a real
 // browser and has to sit through the DDoS-Guard challenge first, so a short
 // budget aborts a search that would have succeeded.
-const searchTimeout = 150 * time.Second
+const searchTimeout = 200 * time.Second
 
 // filterOptions holds all search filter settings
 type filterOptions struct {
