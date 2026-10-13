@@ -138,19 +138,27 @@ func (o *Outcome) Err() error {
 func (s *Searcher) SearchWithStatus(ctx context.Context, query string, limit int) *Outcome {
 	switch s.opt {
 	case OptionAnna:
-		return single(ctx, "anna", func() ([]*anna.Book, error) { return s.searchAnna(ctx, query, limit) })
+		return single(ctx, "anna", AnnaSourceBudget, func() ([]*anna.Book, error) { return s.searchAnna(ctx, query, limit) })
 	case OptionZLibrary:
-		return single(ctx, "zlibrary", func() ([]*anna.Book, error) { return s.searchZLibrary(ctx, query, limit) })
+		return single(ctx, "zlibrary", ZLibrarySourceBudget, func() ([]*anna.Book, error) { return s.searchZLibrary(ctx, query, limit) })
 	case OptionLiber3:
-		return single(ctx, "liber3", func() ([]*anna.Book, error) { return s.searchLiber3(ctx, query, limit) })
+		return single(ctx, "liber3", Liber3SourceBudget, func() ([]*anna.Book, error) { return s.searchLiber3(ctx, query, limit) })
 	default:
 		return s.searchAll(ctx, query, limit)
 	}
 }
 
-// single wraps one source in an Outcome.
-func single(_ context.Context, name string, fn func() ([]*anna.Book, error)) *Outcome {
+// single wraps one source in an Outcome, under the same per-source budget the
+// multi-source path uses: an explicitly requested source gets no more time than
+// it would get inside "--source all".
+func single(ctx context.Context, name string, budget time.Duration, fn func() ([]*anna.Book, error)) *Outcome {
+	srcCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+
 	books, err := fn()
+	if srcCtx.Err() == context.DeadlineExceeded && len(books) == 0 {
+		err = fmt.Errorf("timed out after %s", budget)
+	}
 	return &Outcome{Books: books, Statuses: []SourceStatus{statusFor(name, books, err)}}
 }
 
@@ -276,7 +284,7 @@ const (
 	// Two render attempts (the DDoS-Guard challenge is intermittent) plus browser
 	// start-up have to fit inside this budget.
 	AnnaSourceBudget     = 150 * time.Second
-	ZLibrarySourceBudget = 15 * time.Second
+	ZLibrarySourceBudget = 12 * time.Second
 	Liber3SourceBudget   = 15 * time.Second
 	DefaultSourceBudget  = 20 * time.Second
 )
