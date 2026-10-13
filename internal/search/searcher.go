@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"sync"
+	"time"
 
 	"github.com/billmal071/bookdl/internal/anna"
 	"github.com/billmal071/bookdl/internal/liber3"
@@ -36,6 +36,7 @@ const (
 	StatusOK       = "ok"       // returned at least one result
 	StatusEmpty    = "empty"    // reachable, but matched nothing
 	StatusDegraded = "degraded" // unreachable/blocked; other sources still count
+	StatusPending  = "pending"  // not waited for; another source already answered
 )
 
 // ErrAllSourcesFailed is returned when no configured source produced a result.
@@ -48,14 +49,14 @@ type Outcome struct {
 	Statuses []SourceStatus
 }
 
-// Warnings renders the degraded sources as human-readable notes.
+// Warnings renders the degraded and abandoned sources as human-readable notes.
 func (o *Outcome) Warnings() []string {
 	if o == nil {
 		return nil
 	}
 	var out []string
 	for _, st := range o.Statuses {
-		if st.State != StatusDegraded {
+		if st.State != StatusDegraded && st.State != StatusPending {
 			continue
 		}
 		msg := fmt.Sprintf("source %q unavailable", st.Source)
@@ -101,13 +102,13 @@ func (o *Outcome) Failed() bool {
 	return len(o.Statuses) > 0
 }
 
-// Degraded reports whether any source failed.
+// Degraded reports whether any source failed or was abandoned.
 func (o *Outcome) Degraded() bool {
 	if o == nil {
 		return false
 	}
 	for _, st := range o.Statuses {
-		if st.State == StatusDegraded {
+		if st.State == StatusDegraded || st.State == StatusPending {
 			return true
 		}
 	}
@@ -265,9 +266,25 @@ func (s *Searcher) searchAnna(ctx context.Context, query string, limit int) ([]*
 	return books, nil
 }
 
-// searchAll queries every source concurrently. One dead, blocked or slow
-// source must not abort the command: whatever the survivors returned is
-// returned, and the failures are reported in Outcome.Statuses.
+// Per-source budgets. Measured in the bookdl container on 2026-10-13: the anna
+// path needs ~15-60s (browser start plus the DDoS-Guard wait), zlibrary's
+// browser scrape burns ~55s and still returns nothing, and liber3 fails in
+// ~1s. A hanging source must not delay or suppress rows another source already
+// produced, so every source gets its own bound and the search returns as soon
+// as one of them has something to show.
+const (
+	AnnaSourceBudget     = 120 * time.Second
+	ZLibrarySourceBudget = 15 * time.Second
+	Liber3SourceBudget   = 15 * time.Second
+	DefaultSourceBudget  = 20 * time.Second
+)
+
+// searchAll queries every source concurrently, each under its own budget.
+//
+// It returns as soon as a source produced rows (the remaining sources are
+// reported as still running), or when every source has settled. This is what
+// keeps a dead or hanging backend from turning "--source all" into a command
+// that prints nothing for minutes.
 func (s *Searcher) searchAll(ctx context.Context, query string, limit int) *Outcome {
 	type result struct {
 		name  string
@@ -276,39 +293,86 @@ func (s *Searcher) searchAll(ctx context.Context, query string, limit int) *Outc
 	}
 
 	sources := []struct {
-		name string
-		fn   func(context.Context, string, int) ([]*anna.Book, error)
+		name   string
+		budget time.Duration
+		fn     func(context.Context, string, int) ([]*anna.Book, error)
 	}{
-		{"anna", s.searchAnna},
-		{"zlibrary", s.searchZLibrary},
-		{"liber3", s.searchLiber3},
+		{"anna", AnnaSourceBudget, s.searchAnna},
+		{"zlibrary", ZLibrarySourceBudget, s.searchZLibrary},
+		{"liber3", Liber3SourceBudget, s.searchLiber3},
 	}
 
 	results := make(chan result, len(sources))
-	var wg sync.WaitGroup
-	for _, src := range sources {
-		wg.Add(1)
-		go func(name string, fn func(context.Context, string, int) ([]*anna.Book, error)) {
-			defer wg.Done()
-			books, err := fn(ctx, query, limit)
+
+	// Every browser-backed source starts its own Chromium. Running them at the
+	// same time starves the one source that actually works: measured
+	// 2026-10-13, the anna search takes ~18s alone but ~40s while zlibrary's
+	// Chromium is up. The first-listed source (the one expected to answer) takes
+	// the browser, and a slow source only gets it once rows exist or the budget
+	// is spent.
+	browserGate := make(chan struct{}, 1)
+	for i, src := range sources {
+		if i == 0 {
+			browserGate <- struct{}{}
+		}
+		go func(name string, budget time.Duration, fn func(context.Context, string, int) ([]*anna.Book, error), needGate bool) {
+			srcCtx, cancel := context.WithTimeout(ctx, budget)
+			defer cancel()
+			if needGate {
+				select {
+				case <-browserGate:
+				case <-srcCtx.Done():
+					results <- result{name: name, err: fmt.Errorf("timed out after %s waiting for the browser", budget)}
+					return
+				}
+			}
+			books, err := fn(srcCtx, query, limit)
+			if needGate {
+				browserGate <- struct{}{}
+			}
+			if srcCtx.Err() == context.DeadlineExceeded && len(books) == 0 {
+				err = fmt.Errorf("timed out after %s", budget)
+			}
 			results <- result{name: name, books: books, err: err}
-		}(src.name, src.fn)
+		}(src.name, src.budget, src.fn, i > 0)
 	}
-	wg.Wait()
-	close(results)
 
 	outcome := &Outcome{}
-	for res := range results {
+	for done := 0; done < len(sources); {
+		res := <-results
+		done++
 		outcome.Books = append(outcome.Books, res.books...)
 		outcome.Statuses = append(outcome.Statuses, statusFor(res.name, res.books, res.err))
+
+		// Something to show: return now rather than waiting on a slow source.
+		if len(outcome.Books) > 0 {
+			for _, src := range sources {
+				if !outcome.hasStatus(src.name) {
+					outcome.Statuses = append(outcome.Statuses, SourceStatus{
+						Source: src.name,
+						State:  StatusPending,
+						Err:    "still running when results were returned; not waited for",
+					})
+				}
+			}
+			break
+		}
 	}
 
-	// Stable order regardless of goroutine scheduling.
 	sort.SliceStable(outcome.Statuses, func(i, j int) bool {
 		return outcome.Statuses[i].Source < outcome.Statuses[j].Source
 	})
-
 	return outcome
+}
+
+// hasStatus reports whether a source already has a status entry.
+func (o *Outcome) hasStatus(name string) bool {
+	for _, st := range o.Statuses {
+		if st.Source == name {
+			return true
+		}
+	}
+	return false
 }
 
 // SearchPage searches across sources with pagination support
