@@ -74,6 +74,12 @@ type BrowserConfig struct {
 	MaxCountdownWait time.Duration `mapstructure:"max_countdown_wait"` // Max time to wait for download countdown
 	PollInterval     time.Duration `mapstructure:"poll_interval"`      // How often to check for download link
 	VerboseLogging   bool          `mapstructure:"verbose_logging"`    // Enable detailed logging
+
+	// PlaywrightScript is the path to the Playwright search helper that drives
+	// the DDoS-Guard-protected mirror. Empty disables it. PythonPath is the
+	// interpreter used to run it (default: python3).
+	PlaywrightScript string `mapstructure:"playwright_script"`
+	PythonPath       string `mapstructure:"python_path"`
 }
 
 // CacheConfig holds cache settings

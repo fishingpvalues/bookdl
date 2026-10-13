@@ -158,14 +158,16 @@ func runSearch(cmd *cobra.Command, args []string) error {
 
 	// If not in cache, fetch from searcher
 	if books == nil {
-		var err error
-		books, err = searcher.Search(ctx, query, searchLimit)
-		if err != nil {
-			return fmt.Errorf("search failed: %w", err)
+		outcome := searcher.SearchWithStatus(ctx, query, searchLimit)
+		reportSourceWarnings(outcome)
+		books = outcome.Books
+		if len(books) == 0 && outcome.Failed() {
+			return fmt.Errorf("search failed: %w", outcome.Err())
 		}
 
-		// Save to cache if enabled
-		if cfg.Cache.Enabled {
+		// Save to cache if enabled (only a clean, fully working result set is
+		// cacheable; a degraded run must not be replayed for its whole TTL).
+		if cfg.Cache.Enabled && !outcome.Degraded() && len(books) > 0 {
 			filterMap := filters.toMap()
 			cacheKey := db.GenerateCacheKey(query, filterMap)
 			if resultsJSON, err := json.Marshal(books); err == nil {
@@ -286,6 +288,17 @@ func runSearch(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// reportSourceWarnings prints one line per degraded source. Searches from the
+// surviving sources still succeed; only a total failure is an error.
+func reportSourceWarnings(outcome *search.Outcome) {
+	if outcome == nil {
+		return
+	}
+	for _, w := range outcome.Warnings() {
+		Warnf("%s (results may be incomplete)", w)
+	}
 }
 
 // addToQueue adds a book to the download queue as a pending download
@@ -683,13 +696,15 @@ func showSearchHistoryInteractive(cmd *cobra.Command, args []string) error {
 
 	// If not in cache, fetch from API
 	if books == nil {
-		books, err = searcher.Search(ctx, selected.Query, searchLimit)
-		if err != nil {
-			return fmt.Errorf("search failed: %w", err)
+		outcome := searcher.SearchWithStatus(ctx, selected.Query, searchLimit)
+		reportSourceWarnings(outcome)
+		books = outcome.Books
+		if len(books) == 0 && outcome.Failed() {
+			return fmt.Errorf("search failed: %w", outcome.Err())
 		}
 
 		// Save to cache if enabled
-		if cfg.Cache.Enabled {
+		if cfg.Cache.Enabled && !outcome.Degraded() && len(books) > 0 {
 			filterMap := filters.toMap()
 			cacheKey := db.GenerateCacheKey(selected.Query, filterMap)
 			if resultsJSON, err := json.Marshal(books); err == nil {

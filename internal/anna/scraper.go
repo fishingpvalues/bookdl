@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
+	"github.com/billmal071/bookdl/internal/config"
 	"github.com/gocolly/colly/v2"
 )
 
@@ -22,10 +23,15 @@ var (
 	ErrNoResults = errors.New("no results found")
 )
 
-// ScraperClient scrapes Anna's Archive website
+// ScraperClient scrapes Anna's Archive website.
+//
+// Plain HTTP is answered by a DDoS-Guard interstitial, so the real search runs
+// in a browser: the Playwright helper when it is configured (the only path
+// measured to pass the challenge), otherwise the legacy chromedp client.
 type ScraperClient struct {
-	baseURL string
-	browser *BrowserClient
+	baseURL    string
+	browser    *BrowserClient
+	playwright *PlaywrightClient
 }
 
 // NewScraperClient creates a new scraper client
@@ -33,10 +39,33 @@ func NewScraperClient(baseURL string) *ScraperClient {
 	if baseURL == "" {
 		baseURL = "annas-archive.gl"
 	}
+	cfg := config.Get()
 	return &ScraperClient{
-		baseURL: baseURL,
-		browser: NewBrowserClient(baseURL),
+		baseURL:    baseURL,
+		browser:    NewBrowserClient(baseURL),
+		playwright: NewPlaywrightClient(baseURL, cfg.Browser.PlaywrightScript, cfg.Browser.PythonPath),
 	}
+}
+
+// browserSearch runs the search in a browser, preferring the Playwright helper.
+func (c *ScraperClient) browserSearch(ctx context.Context, query string, limit, page int) ([]*Book, error) {
+	var playwrightErr error
+	if c.playwright != nil && c.playwright.Available() {
+		books, err := c.playwright.SearchPage(ctx, query, limit, page)
+		if err == nil {
+			return books, nil
+		}
+		if errors.Is(err, ErrNoResults) {
+			// The page rendered and genuinely had no matches.
+			return nil, err
+		}
+		playwrightErr = err
+	}
+	books, err := c.browser.SearchPage(ctx, query, limit, page)
+	if err != nil && playwrightErr != nil {
+		return nil, fmt.Errorf("%v; chromedp fallback: %w", playwrightErr, err)
+	}
+	return books, err
 }
 
 // Search searches for books by scraping the website
@@ -48,6 +77,7 @@ func (c *ScraperClient) Search(ctx context.Context, query string, limit int) ([]
 func (c *ScraperClient) SearchPage(ctx context.Context, query string, limit int, page int) ([]*Book, error) {
 	var books []*Book
 	var cloudflareDetected bool
+	var ddosGuardDetected bool
 	var scrapeErr error
 
 	collector := colly.NewCollector(
@@ -65,6 +95,12 @@ func (c *ScraperClient) SearchPage(ctx context.Context, query string, limit int,
 			strings.Contains(body, "Just a moment...") ||
 			strings.Contains(body, "_cf_chl") {
 			cloudflareDetected = true
+		}
+		// DDoS-Guard fronts the current mirrors and answers plain HTTP with a
+		// 403 interstitial; the browser path is the only way through.
+		if r.StatusCode == 403 || strings.Contains(body, "ddos-guard") ||
+			strings.Contains(body, "DDoS-Guard") {
+			ddosGuardDetected = true
 		}
 	})
 
@@ -97,14 +133,14 @@ func (c *ScraperClient) SearchPage(ctx context.Context, query string, limit int,
 	err := collector.Visit(searchURL)
 	if err != nil {
 		// Try browser fallback
-		return c.browser.SearchPage(ctx, query, limit, page)
+		return c.browserSearch(ctx, query, limit, page)
 	}
 
 	collector.Wait()
 
-	if cloudflareDetected {
+	if cloudflareDetected || ddosGuardDetected {
 		// Fall back to headless browser
-		return c.browser.SearchPage(ctx, query, limit, page)
+		return c.browserSearch(ctx, query, limit, page)
 	}
 
 	if scrapeErr != nil {

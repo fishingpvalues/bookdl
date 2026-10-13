@@ -50,7 +50,7 @@ var sourceOptions = [4]search.Option{
 	search.OptionAll, search.OptionAnna, search.OptionZLibrary, search.OptionLiber3,
 }
 
-func (s sourceOption) String() string { return sourceNames[s] }
+func (s sourceOption) String() string     { return sourceNames[s] }
 func (s sourceOption) next() sourceOption { return (s + 1) % 4 }
 
 type searchModel struct {

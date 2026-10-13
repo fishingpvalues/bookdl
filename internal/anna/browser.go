@@ -6,7 +6,6 @@ import (
 	"io"
 	"log"
 	"net/url"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -473,98 +472,6 @@ func extractDownloadURL(html string, baseURL string) string {
 	}
 
 	return downloadURL
-}
-
-// parseSearchResultsHTML parses search results from HTML content
-func parseSearchResultsHTML(html string, limit int, baseURL string) ([]*Book, error) {
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
-	if err != nil {
-		return nil, err
-	}
-
-	var books []*Book
-	md5Regex := regexp.MustCompile(`/md5/([a-fA-F0-9]{32})`)
-	seenMD5 := make(map[string]bool)
-
-	// Use js-vim-focus class to match only title links, not cover images
-	doc.Find("a.js-vim-focus[href*='/md5/']").Each(func(i int, s *goquery.Selection) {
-		if len(books) >= limit {
-			return
-		}
-
-		href, _ := s.Attr("href")
-		matches := md5Regex.FindStringSubmatch(href)
-		if len(matches) < 2 {
-			return
-		}
-
-		book := &Book{
-			MD5Hash: strings.ToLower(matches[1]),
-			PageURL: fmt.Sprintf("https://%s/md5/%s", baseURL, matches[1]),
-		}
-
-		// Extract title
-		if title := s.Find("h3").First().Text(); title != "" {
-			book.Title = strings.TrimSpace(title)
-		} else {
-			book.Title = strings.TrimSpace(s.Text())
-		}
-
-		// Clean up title - limit length and remove emojis
-		if len(book.Title) > 200 {
-			book.Title = book.Title[:200] + "..."
-		}
-
-		// Extract metadata from parent/sibling elements (format, size, language are in gray text divs)
-		metaText := ""
-		parent := s.Parent()
-		if parent.Length() > 0 {
-			// Look in parent and siblings for metadata
-			parent.Find("div.text-gray-800, div.text-sm, div.truncate").Each(func(_ int, el *goquery.Selection) {
-				metaText += " " + el.Text()
-			})
-			// Also check grandparent
-			grandparent := parent.Parent()
-			if grandparent.Length() > 0 {
-				grandparent.Find("div.text-gray-800, div.text-xs").Each(func(_ int, el *goquery.Selection) {
-					metaText += " " + el.Text()
-				})
-			}
-		}
-		metaText = strings.ToLower(metaText)
-
-		// Format detection
-		for _, format := range []string{"epub", "pdf", "mobi", "azw3", "djvu", "fb2", "cbr", "cbz"} {
-			if strings.Contains(metaText, format) {
-				book.Format = strings.ToUpper(format)
-				break
-			}
-		}
-
-		// Size detection (e.g., "5.2MB", "1.1 GB")
-		if sizeMatch := regexp.MustCompile(`(\d+\.?\d*)\s*(KB|MB|GB)`).FindStringSubmatch(metaText); len(sizeMatch) > 0 {
-			book.Size = sizeMatch[0]
-		}
-
-		// Language detection
-		for _, lang := range []string{"english", "russian", "german", "french", "spanish", "chinese", "japanese", "portuguese", "italian"} {
-			if strings.Contains(metaText, lang) {
-				book.Language = strings.Title(lang)
-				break
-			}
-		}
-
-		if book.Title != "" && book.MD5Hash != "" && !seenMD5[book.MD5Hash] {
-			seenMD5[book.MD5Hash] = true
-			books = append(books, book)
-		}
-	})
-
-	if len(books) == 0 {
-		return nil, ErrNoResults
-	}
-
-	return books, nil
 }
 
 // parseDownloadPageHTML parses download links from the book page HTML

@@ -4,17 +4,47 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/billmal071/bookdl/internal/config"
 )
 
-const (
-	apiBaseURL = "https://lgate.glitternode.ru/v1"
-)
+// ErrUnavailable reports that the Liber3 backend cannot be reached at all
+// (dead DNS, connection refused, timeout). Callers treat it as "source
+// degraded", not as a fatal error.
+var ErrUnavailable = errors.New("liber3 backend unavailable")
+
+// defaultAPIBaseURL is the historical Liber3 backend. The host stopped
+// resolving in 2026-10 (NXDOMAIN from the VPN namespace), so it is only a
+// fallback used when the configured base URL is not itself an API endpoint.
+const defaultAPIBaseURL = "https://lgate.glitternode.ru/v1"
+
+// apiBaseURL returns the Liber3 API base to use.
+//
+// config liber3.base_url defaults to the liber3.eth.limo frontend, which is not
+// an API endpoint, so it is only honoured when it already ends in /v1 (or is a
+// bare host we can append /v1 to). Otherwise the historical backend is used and
+// its failure is reported as ErrUnavailable, so a multi-source search degrades
+// instead of aborting.
+func apiBaseURL() string {
+	base := strings.TrimRight(strings.TrimSpace(config.Get().Liber3.BaseURL), "/")
+	if base == "" {
+		return defaultAPIBaseURL
+	}
+	if strings.HasSuffix(base, "/v1") {
+		return base
+	}
+	if !strings.Contains(base, "://") {
+		return "https://" + base + "/v1"
+	}
+	return defaultAPIBaseURL
+}
 
 // ipfsGateways is the list of IPFS gateways to try, in order.
 // Matches Liber3's Library3.supportedGateways.
@@ -80,7 +110,7 @@ func (c *APIClient) SearchPage(ctx context.Context, query string, limit int, pag
 		return nil, fmt.Errorf("failed to marshal search request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", apiBaseURL+"/searchV2", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", apiBaseURL()+"/searchV2", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -88,7 +118,7 @@ func (c *APIClient) SearchPage(ctx context.Context, query string, limit int, pag
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("search request failed: %w", err)
+		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	defer resp.Body.Close()
 
@@ -160,7 +190,7 @@ func (c *APIClient) GetDownloadInfo(ctx context.Context, md5Hash string) (*Downl
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", apiBaseURL+"/book", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", apiBaseURL()+"/book", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}

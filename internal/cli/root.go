@@ -105,6 +105,13 @@ func Errorf(format string, args ...interface{}) {
 	fmt.Fprintf(os.Stderr, "Error: "+format+"\n", args...)
 }
 
+// Warnf prints a non-fatal warning to stderr. Warnings are shown regardless of
+// --verbose: a source that degraded is information the user needs, and stderr
+// keeps it out of piped result output.
+func Warnf(format string, args ...interface{}) {
+	fmt.Fprintf(os.Stderr, "warning: "+format+"\n", args...)
+}
+
 // Successf prints a success message
 func Successf(format string, args ...interface{}) {
 	fmt.Printf("✓ "+format+"\n", args...)
